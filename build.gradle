@@ -35,6 +35,10 @@ application {
     applicationDefaultJvmArgs = ['-Xms64m', '-Xmx256m']
 }
 
+run {
+    standardInput = System.in
+}
+
 // Configuração do JavaCompile para recompilação mínima (requisito 3)
 tasks.withType(JavaCompile) {
     options.incremental = true
