@@ -1,0 +1,478 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'jacoco'
+    id 'org.asciidoctor.jvm.convert' version '4.0.5'
+}
+
+group = 'com.example'
+version = '1.0-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(26)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Dependências de produção
+    implementation 'com.google.guava:guava:32.1.3-jre'
+    
+    // Dependências de teste
+    testImplementation platform('org.junit:junit-bom:5.10.0')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Configuração da aplicação principal (requisito 4)
+application {
+    mainClass = 'calculadora.Main'
+    applicationName = 'calculadora'
+    applicationDefaultJvmArgs = ['-Xms64m', '-Xmx256m']
+}
+
+// Configuração do JavaCompile para recompilação mínima (requisito 3)
+tasks.withType(JavaCompile) {
+    options.incremental = true
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:unchecked', '-Xlint:deprecation']
+}
+
+// ==================== REQUISITO 2: INTEGRAÇÃO COM GIT ====================
+tasks.register('gitInfo') {
+    description = 'Obtém informações do Git e gera arquivo de versão'
+    group = 'versioning'
+    
+    doLast {
+        def gitBranch = 'git rev-parse --abbrev-ref HEAD'.execute().text.trim()
+        def gitCommit = 'git rev-parse --short HEAD'.execute().text.trim()
+        def gitCommitFull = 'git rev-parse HEAD'.execute().text.trim()
+        def gitStatus = 'git status --porcelain'.execute().text.trim()
+        
+        println "========================================="
+        println "Informações do Git"
+        println "========================================="
+        println "Branch: $gitBranch"
+        println "Commit: $gitCommit"
+        println "Commit completo: $gitCommitFull"
+        println "Working directory: ${gitStatus.isEmpty() ? 'Clean' : 'Modified'}"
+        
+        // Gerar arquivo de versão
+        def versionFile = file("${buildDir}/version.properties")
+        versionFile.parentFile.mkdirs()
+        versionFile.text = """
+# Gerado automaticamente por Gradle em ${new Date()}
+version=${project.version}
+buildNumber=${System.getenv('BUILD_NUMBER') ?: 'SNAPSHOT'}
+buildTime=${new Date().format('yyyy-MM-dd HH:mm:ss')}
+git.branch=${gitBranch}
+git.commit=${gitCommit}
+git.commit.full=${gitCommitFull}
+git.clean=${gitStatus.isEmpty()}
+        """.stripIndent()
+        
+        println "Arquivo de versão gerado: ${versionFile.absolutePath}"
+    }
+}
+
+// ==================== REQUISITO 5: AUTOMAÇÃO DE TESTES ====================
+test {
+    description = 'Executa os testes unitários'
+    group = 'verification'
+    
+    useJUnitPlatform()
+    
+    // Configurações avançadas de teste
+    testLogging {
+        events "PASSED", "FAILED", "SKIPPED", "STANDARD_OUT", "STANDARD_ERROR"
+        exceptionFormat "full"
+        showStandardStreams = true
+        displayGranularity = 2
+    }
+    
+    // Testes paralelos para maior performance
+    maxParallelForks = Runtime.runtime.availableProcessors()
+    
+    // Timeout global para testes
+    timeout = Duration.ofMinutes(5)
+    
+    // Configuração de sistema para testes
+    systemProperty 'junit.jupiter.execution.parallel.enabled', 'true'
+    systemProperty 'junit.jupiter.execution.parallel.mode.default', 'concurrent'
+    
+    // Relatórios de teste (parte do requisito 6)
+    reports {
+        html.required = true
+        junitXml.required = true
+        html.outputLocation = file("${buildDir}/reports/tests/test")
+    }
+    
+    // Filtros de teste
+    filter {
+        includeTestsMatching "*Test"
+        excludeTestsMatching "*IntegrationTest"
+    }
+}
+
+// Testes de integração separados
+tasks.register('integrationTest', Test) {
+    description = 'Executa testes de integração'
+    group = 'verification'
+    
+    useJUnitPlatform()
+    filter {
+        includeTestsMatching "*IntegrationTest"
+    }
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    
+    testLogging {
+        events "PASSED", "FAILED", "SKIPPED"
+        exceptionFormat "full"
+    }
+    
+    reports {
+        html.required = true
+        html.outputLocation = file("${buildDir}/reports/tests/integrationTest")
+    }
+}
+
+// Executar testes no build
+check.dependsOn integrationTest
+
+// ==================== REQUISITO 6: RELATÓRIOS ====================
+jacoco {
+    toolVersion = "0.8.11"
+}
+
+jacocoTestReport {
+    description = 'Gera relatório de cobertura de código'
+    group = 'reporting'
+    
+    dependsOn test
+    reports {
+        html.required = true
+        xml.required = true
+        csv.required = false
+        html.outputLocation = file("${buildDir}/reports/jacoco")
+    }
+    
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: [
+                '**/Main.class',
+                '**/Main\$*.class'
+            ])
+        }))
+    }
+}
+
+// Relatório de dependências
+tasks.register('dependencyReport') {
+    description = 'Gera relatório de dependências do projeto'
+    group = 'reporting'
+    
+    doLast {
+        def reportDir = file("${buildDir}/reports/dependencies")
+        reportDir.mkdirs()
+        
+        def reportFile = file("${reportDir}/dependencies.txt")
+        
+        // Coleta e formata as dependências de runtime de forma compatível
+        def runtimeDepsText = ""
+        configurations.runtimeClasspath.resolve().eachWithIndex { dep, idx ->
+            runtimeDepsText += "  ${idx + 1}. ${dep.name} (${dep.absolutePath})\n"
+        }
+        
+        // Coleta e formata as dependências de teste de forma compatível
+        def testDepsText = ""
+        configurations.testRuntimeClasspath.resolve().eachWithIndex { dep, idx ->
+            testDepsText += "  ${idx + 1}. ${dep.name}\n"
+        }
+        
+        reportFile.text = """
+===========================================
+RELATÓRIO DE DEPENDÊNCIAS
+===========================================
+Gerado em: ${new Date()}
+Projeto: ${project.name} v${project.version}
+
+DEPENDÊNCIAS DE RUNTIME:
+-------------------------------------------
+${runtimeDepsText.isEmpty() ? '  Nenhuma dependência encontrada.\n' : runtimeDepsText}
+DEPENDÊNCIAS DE TESTE:
+-------------------------------------------
+${testDepsText.isEmpty() ? '  Nenhuma dependência encontrada.\n' : testDepsText}
+RESUMO:
+-------------------------------------------
+Total runtime dependencies: ${configurations.runtimeClasspath.resolve().size()}
+Total test dependencies: ${configurations.testRuntimeClasspath.resolve().size()}
+        """.stripIndent()
+        
+        println "Relatório de dependências gerado: ${reportFile.absolutePath}"
+    }
+}
+
+// Relatório consolidado
+tasks.register('generateReports') {
+    description = 'Gera todos os relatórios do projeto'
+    group = 'reporting'
+    
+    dependsOn test, integrationTest, jacocoTestReport, dependencyReport
+    
+    doLast {
+        println "\n========================================="
+        println "RELATÓRIOS GERADOS"
+        println "========================================="
+        println "Testes unitários:     ${buildDir}/reports/tests/test/index.html"
+        println "Testes integração:    ${buildDir}/reports/tests/integrationTest/index.html"
+        println "Cobertura de código:  ${buildDir}/reports/jacoco/html/index.html"
+        println "Dependências:         ${buildDir}/reports/dependencies/dependencies.txt"
+        println "=========================================\n"
+    }
+}
+
+// ==================== REQUISITO 4: SISTEMA EXECUTÁVEL ====================
+// Tarefa para criar executáveis multiplataforma
+tasks.register('buildDistributables') {
+    description = 'Cria distribuições executáveis do sistema'
+    group = 'distribution'
+    
+    dependsOn installDist, distZip, distTar
+    
+    doLast {
+        println "\n========================================="
+        println "EXECUTÁVEIS CRIADOS"
+        println "========================================="
+        println "Instalação direta:   ${buildDir}/install/${application.applicationName}/bin/"
+        println "Arquivo ZIP:         ${buildDir}/distributions/${project.name}-${version}.zip"
+        println "Arquivo TAR:         ${buildDir}/distributions/${project.name}-${version}.tar"
+        println "=========================================\n"
+    }
+}
+
+// Script de lançamento customizado
+tasks.register('createLauncherScript') {
+    description = 'Cria script de lançamento customizado'
+    group = 'distribution'
+    
+    def launcherDir = file("${buildDir}/launcher")
+    def launcherFile = file("${launcherDir}/calculadora")
+    
+    outputs.file(launcherFile)
+    
+    doLast {
+        launcherDir.mkdirs()
+        launcherFile.text = """#!/bin/bash
+# Calculadora Float Launcher
+# Versão: ${project.version}
+# Gerado em: ${new Date()}
+
+JAVA_OPTS="-Xms64m -Xmx256m"
+MAIN_CLASS="calculadora.Main"
+CP="${buildDir}/libs/${project.name}-${version}.jar"
+
+echo "Iniciando Calculadora Float v${project.version}..."
+java \$JAVA_OPTS -cp \$CP \$MAIN_CLASS
+        """.stripIndent()
+        launcherFile.setExecutable(true)
+        
+        println "Launcher script criado: ${launcherFile.absolutePath}"
+    }
+}
+
+// ==================== REQUISITO 7: DOCUMENTAÇÃO ====================
+// Javadoc
+javadoc {
+    description = 'Gera documentação da API Java'
+    group = 'documentation'
+    
+    title = "Calculadora Float - Documentação API v${version}"
+    options {
+        encoding = 'UTF-8'
+        links 'https://docs.oracle.com/en/java/javase/17/docs/api/'
+        addStringOption 'Xdoclint:none', '-quiet'
+        windowTitle = "Calculadora Float API ${version}"
+        docTitle = "Calculadora Float API <br>Version ${version}"
+        bottom = "Copyright © ${new Date().format('yyyy')} Calculadora Float. All rights reserved."
+        memberLevel = JavadocMemberLevel.PROTECTED
+    }
+    
+    include 'calculadora/Calculadora.java'
+    
+    options.memberLevel = javadoc.options.memberLevel.PROTECTED
+    
+    doLast {
+        println " Javadoc gerado: ${buildDir}/docs/javadoc/index.html"
+    }
+}
+
+// Documentação AsciiDoctor
+asciidoctor {
+    description = 'Gera documentação técnica em HTML'
+    group = 'documentation'
+    
+    sourceDir = file('src/docs/asciidoc')
+    outputDir = file("${buildDir}/docs/html")
+    
+    attributes 'version': project.version,
+               'source-highlighter': 'rouge',
+               'toc': 'left',
+               'icons': 'font',
+               'sectlinks': true,
+               'sectanchors': true
+    
+    sources {
+        include 'index.adoc'
+    }
+    
+    doFirst {
+        if (!sourceDir.exists()) {
+            println "  Diretório de documentação não encontrado: ${sourceDir}"
+            println "   Criando diretório para documentação futura..."
+            sourceDir.mkdirs()
+        }
+    }
+}
+
+// Guia do usuário em Markdown
+tasks.register('userGuide') {
+    description = 'Gera guia do usuario em Markdown'
+    group = 'documentation'
+    
+    def docsDir = file("${buildDir}/docs")
+    def userGuideFile = file("${docsDir}/UserGuide.md")
+    
+    outputs.file(userGuideFile)
+    
+    doLast {
+        docsDir.mkdirs()
+        userGuideFile.text = """# Calculadora Float - Guia do Usuario
+
+**Versao:** ${project.version}  
+**Data:** ${new Date().format('dd/MM/yyyy')}
+
+---
+
+## Indice
+
+1. [Sobre o Projeto](#sobre)
+2. [Instalacao](#instalacao)
+3. [Como Usar](#como-usar)
+4. [Exemplos](#exemplos)
+5. [Resolucao de Problemas](#problemas)
+6. [Compilacao](#compilacao)
+
+---
+
+## Sobre o Projeto
+
+Calculadora simples para operacoes matematicas basicas com numeros de ponto flutuante.
+
+### Funcionalidades
+
+- Soma
+- Subtracao
+- Multiplicacao
+- Divisao
+
+---
+
+## Instalacao
+
+### Pre-requisitos
+
+- Java 26
+- Gradle 8.0+ (ou usar o wrapper incluso)
+
+### Passos para instalacao
+
+1. **Clone o repositorio**
+git clone [url-do-repositorio]
+cd GradleCalculator
+
+2. **Compile o projeto**
+./gradlew build
+
+3. **Execute a aplicacao**
+./gradlew run
+
+---
+
+## Como Usar
+
+1. Execute o programa
+2. Escolha a operacao desejada (1-4)
+3. Digite os dois numeros
+4. Veja o resultado
+5. Digite 0 para sair
+
+---
+
+## Exemplos
+
+### Exemplo 1: Soma
+Opcao: 1
+Digite o primeiro numero: 10.5
+Digite o segundo numero: 20.3
+Resultado: 10,50 + 20,30 = 30,80
+
+### Exemplo 2: Divisao
+Opcao: 4
+Digite o primeiro numero: 15
+Digite o segundo numero: 3
+Resultado: 15,00 / 3,00 = 5,00
+
+---
+
+## Resolucao de Problemas
+
+### Erro: "Divisao por zero"
+- Nao e permitido dividir por zero
+
+### Erro: "NoSuchElementException"
+- Execute com: ./gradlew run --console=plain
+- Ou use o JAR diretamente: java -jar build/libs/GradleCalculator-1.0-SNAPSHOT.jar
+
+---
+
+## Compilacao
+
+### Compilar apenas
+./gradlew compileJava
+
+### Compilar com testes
+./gradlew build
+
+### Gerar documentacao
+./gradlew javadoc
+./gradlew asciidoctor
+./gradlew generateReports
+
+### Criar executaveis
+./gradlew buildDistributables
+
+---
+
+## Estrutura do Projeto
+GradleCalculator/
+├── src/
+│   ├── main/
+│   │   └── java/calculadora/
+│   │       ├── Calculadora.java
+│   │       └── Main.java
+│   └── test/
+│       └── java/calculadora/
+│           └── CalculadoraTest.java
+├── build.gradle
+├── settings.gradle
+└── README.md
+""".stripIndent()
+        
+        println "User Guide gerado em: ${userGuideFile.absolutePath}"
+    }
+}
